@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crc32fast::Hasher as CRC32;
 
+use crate::EntryIterator;
 use crate::Error;
 use crate::Options;
 
@@ -19,6 +20,12 @@ pub struct Log {
 
     // Offset of last written data
     last_data_off: u64,
+}
+
+#[derive(Debug)]
+pub struct Chunk {
+    pub data: Vec<u8>,
+    pub next: u64,
 }
 
 impl Log {
@@ -118,7 +125,7 @@ impl Log {
         self.last_data_off
     }
 
-    pub fn read(&mut self, off: u64) -> Result<Vec<u8>, Error> {
+    pub fn read(&mut self, off: u64) -> Result<Chunk, Error> {
         let mut len: [u8; 8] = [0; 8];
         self.file.seek(SeekFrom::Start(off))?;
         self.file.read_exact(&mut len)?;
@@ -128,18 +135,22 @@ impl Log {
         self.file.read_exact(&mut crc32)?;
         let crc32 = u32::from_be_bytes(crc32);
 
-        let mut result: Vec<u8> = std::iter::repeat(0).take(len as usize).collect();
-        self.file.read_exact(&mut result)?;
+        let mut data: Vec<u8> = std::iter::repeat(0).take(len as usize).collect();
+        self.file.read_exact(&mut data)?;
 
         let mut hash = CRC32::new();
-        hash.update(&result);
+        hash.update(&data);
         let checksum: u32 = hash.finalize();
 
         if checksum != crc32 {
             return Err(Error::InvalidChecksum);
         }
 
-        Ok(result)
+        let pad_size = self.options.pad_size as u64;
+        let mut next = off + 12 + len;
+        next += pad_size - (next % pad_size);
+
+        Ok(Chunk { data, next })
     }
 
     pub fn flush(&mut self) -> Result<(), Error> {
@@ -170,6 +181,10 @@ impl Log {
 
         Ok(())
     }
+
+    pub fn iter(&mut self) -> Result<EntryIterator, Error> {
+        EntryIterator::with_log(self)
+    }
 }
 
 #[cfg(test)]
@@ -199,10 +214,50 @@ mod tests {
             let mut log = Log::open_default(&log_path).expect("log to re-open");
 
             assert_eq!(log.last_data_off(), 16);
-            assert_eq!(
-                log.read(log.last_data_off()).expect("read to succeed"),
-                vec![4, 5, 6]
-            );
+            let chunk = log.read(log.last_data_off()).expect("read to succeed");
+            assert_eq!(chunk.data, vec![4, 5, 6]);
+            assert_eq!(chunk.next, 32);
+
+            let chunk = log.read(0).expect("read to succeed");
+            assert_eq!(chunk.next, 16);
+        }
+    }
+
+    #[test]
+    fn it_should_iterate() {
+        let dir = tempdir().expect("temporary directory to create");
+        let log_path = dir.path().join("log.db");
+
+        // Write data
+        let mut log = Log::open_default(&log_path).expect("log to open");
+
+        log.append(&[1, 2, 3]);
+        log.append(&[4, 5, 6]);
+        log.append(&[7, 8, 9]);
+        log.flush().expect("flush to succeed");
+
+        {
+            let mut iter = log.iter().expect("iterator to be created");
+
+            let chunk = iter
+                .next()
+                .expect("1st chunk")
+                .expect("1st chunk to be read");
+            assert_eq!(chunk, vec![1, 2, 3]);
+
+            let chunk = iter
+                .next()
+                .expect("2nd chunk")
+                .expect("2nd chunk to be read");
+            assert_eq!(chunk, vec![4, 5, 6]);
+
+            let chunk = iter
+                .next()
+                .expect("3rd chunk")
+                .expect("3rd chunk to be read");
+            assert_eq!(chunk, vec![7, 8, 9]);
+
+            assert!(iter.next().is_none());
         }
     }
 }
