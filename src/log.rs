@@ -27,7 +27,11 @@ impl Log {
     }
 
     pub fn open(path: &Path, options: Options) -> Result<Self, Error> {
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .create(true)
+            .append(true)
+            .open(path)?;
         let buffer = Vec::with_capacity(options.buffer_size);
         let mut log = Log {
             file,
@@ -114,7 +118,7 @@ impl Log {
         self.last_data_off
     }
 
-    pub fn get(&mut self, off: u64) -> Result<Vec<u8>, Error> {
+    pub fn read(&mut self, off: u64) -> Result<Vec<u8>, Error> {
         let mut len: [u8; 8] = [0; 8];
         self.file.seek(SeekFrom::Start(off))?;
         self.file.read_exact(&mut len)?;
@@ -139,6 +143,11 @@ impl Log {
     }
 
     pub fn flush(&mut self) -> Result<(), Error> {
+        // No data to flush
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+
         // Pad to the block size
         let block_size = self.options.block_size as u64;
         let pad = block_size - ((self.offset + 16) % block_size);
@@ -176,9 +185,24 @@ mod tests {
         let dir = tempdir().expect("temporary directory to create");
         let log_path = dir.path().join("log.db");
 
-        let mut log = Log::open_default(&log_path).expect("log to open");
+        // Write data
+        {
+            let mut log = Log::open_default(&log_path).expect("log to open");
 
-        log.append(&[1, 2, 3]);
-        log.flush().expect("flush to succeed");
+            log.append(&[1, 2, 3]);
+            log.append(&[4, 5, 6]);
+            log.flush().expect("flush to succeed");
+        }
+
+        // Re-open log
+        {
+            let mut log = Log::open_default(&log_path).expect("log to re-open");
+
+            assert_eq!(log.last_data_off(), 16);
+            assert_eq!(
+                log.read(log.last_data_off()).expect("read to succeed"),
+                vec![4, 5, 6]
+            );
+        }
     }
 }
