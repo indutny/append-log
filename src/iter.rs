@@ -17,6 +17,10 @@ impl<'a> std::iter::Iterator for EntryIterator<'a> {
     type Item = Result<Vec<u8>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.log.is_empty() {
+            return None;
+        }
+
         if self.offset > self.log.last_data_off() {
             return None;
         }

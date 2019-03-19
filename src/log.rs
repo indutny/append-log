@@ -86,6 +86,10 @@ impl Log {
         Ok(())
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.offset == 0
+    }
+
     pub fn last_data_off(&self) -> u64 {
         self.last_data_off
     }
@@ -230,6 +234,11 @@ mod tests {
 
         // Write data
         let mut log = Log::open_default(&log_path).expect("log to open");
+
+        {
+            let mut iter = log.iter().expect("iterator to be created");
+            assert!(iter.next().is_none());
+        }
 
         log.append(&[1, 2, 3]);
         log.append(&[4, 5, 6]);
