@@ -90,6 +90,11 @@ impl Log {
         self.offset == 0
     }
 
+    /// Size of the file
+    pub fn file_size(&self) -> u64 {
+        self.offset
+    }
+
     pub fn last_data_off(&self) -> u64 {
         self.last_data_off
     }
@@ -98,6 +103,39 @@ impl Log {
         Err(Error::NotImplemented)
     }
 
+    /// Estimate the file size after appending the `data` and flushing it
+    /// immediately.
+    pub fn estimate(&mut self, data: &[u8]) -> u64 {
+        let mut offset = self.offset;
+
+        // Length
+        offset += 8;
+
+        // Checksum
+        offset += 4;
+
+        // Data
+        offset += data.len() as u64;
+
+        // Padding
+        let pad_size = self.options.pad_size as u64;
+        offset += pad_size - (offset % pad_size);
+
+        // Flushing:
+        //
+        // Magic + offset to last data
+        offset += 16;
+
+        // Padding
+        let block_size = self.options.block_size as u64;
+        offset += block_size - (offset % block_size);
+
+        offset
+    }
+
+    /// Append data to the log's buffer.
+    ///
+    /// NOTE: `flush()` must be called to write buffered data to the disk.
     pub fn append(&mut self, data: &[u8]) -> u64 {
         self.last_data_off = self.offset;
 
@@ -157,6 +195,7 @@ impl Log {
         Ok(Chunk { data, next })
     }
 
+    /// Write buffered data to the disk, padding it appropriately.
     pub fn flush(&mut self) -> Result<(), Error> {
         // No data to flush
         if self.buffer.is_empty() {
@@ -242,8 +281,11 @@ mod tests {
 
         log.append(&[1, 2, 3]);
         log.append(&[4, 5, 6]);
+        let size = log.estimate(&[7, 8, 9]);
         log.append(&[7, 8, 9]);
         log.flush().expect("flush to succeed");
+
+        assert_eq!(log.file_size(), size);
 
         {
             let mut iter = log.iter().expect("iterator to be created");
